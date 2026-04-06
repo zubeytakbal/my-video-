@@ -1,280 +1,217 @@
-import { useRef, useEffect, useCallback } from "react";
-import { useSphere } from "@react-three/cannon";
-import type { PublicApi } from "@react-three/cannon";
+import { useRef, useCallback } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { BOUNDARY_RADIUS } from "./Boundary";
 import { useAudioVisualSync } from "./useAudioVisualSync";
 
-// ─── Constants ──────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────
 const O_RADIUS = 0.6;
 const H_RADIUS = 0.3;
-const O_MASS = 4;
-const H_MASS = 1;
-const BOND_THRESHOLD = 1.8;         // distance to trigger bonding
-const BOND_ARM = O_RADIUS + H_RADIUS + 0.25; // O–H bond length ~1.15
-const HALF_ANGLE = (104.5 * Math.PI) / 360;  // half of 104.5°
-const BREAK_SPEED = 5.5;            // O speed threshold to break bond
+const BOND_THRESHOLD = 1.8;
+const BOND_ARM = O_RADIUS + H_RADIUS + 0.2;
+const HALF_ANGLE = (104.5 * Math.PI) / 360;
+const BREAK_SPEED = 4.5;
+const DAMPING = 0.9998;
 
-// ─── Helpers ────────────────────────────────────────────────────────────────────
-function randVel(s: number): [number, number, number] {
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Vec2 { x: number; y: number }
+interface Atom { pos: Vec2; vel: Vec2 }
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function randVel(s: number): Vec2 {
   const a = Math.random() * Math.PI * 2;
-  return [
-    Math.cos(a) * s * (0.5 + Math.random() * 0.8),
-    Math.sin(a) * s * (0.5 + Math.random() * 0.8),
-    0,
-  ];
+  const sp = s * (0.5 + Math.random() * 0.8);
+  return { x: Math.cos(a) * sp, y: Math.sin(a) * sp };
 }
 
-/**
- * Reflect atom off the circular boundary wall.
- * Called every frame; only acts when the atom is outside the boundary.
- */
-function reflectAtom(
-  pos: THREE.Vector3,
-  vel: [number, number, number],
-  radius: number,
-  api: PublicApi,
-  onHit: () => void
-): void {
-  const d = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
+function dist2(a: Vec2, b: Vec2): number {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+}
+
+/** Reflect atom off circular wall. Returns true if a hit occurred. */
+function reflectWall(atom: Atom, radius: number, onHit: () => void): boolean {
+  const d = Math.sqrt(atom.pos.x ** 2 + atom.pos.y ** 2);
   const limit = BOUNDARY_RADIUS - radius;
   if (d > limit) {
-    const nx = pos.x / d;
-    const ny = pos.y / d;
-    const dot = vel[0] * nx + vel[1] * ny;
+    const nx = atom.pos.x / d;
+    const ny = atom.pos.y / d;
+    const dot = atom.vel.x * nx + atom.vel.y * ny;
     if (dot > 0) {
-      api.velocity.set(vel[0] - 2 * dot * nx, vel[1] - 2 * dot * ny, 0);
-      api.position.set(nx * (limit - 0.05), ny * (limit - 0.05), 0);
-      if (Math.abs(dot) > 0.5) onHit();
+      atom.vel.x -= 2 * dot * nx;
+      atom.vel.y -= 2 * dot * ny;
+      atom.pos.x = nx * (limit - 0.05);
+      atom.pos.y = ny * (limit - 0.05);
+      if (Math.abs(dot) > 0.3) onHit();
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Simple elastic sphere-sphere collision. */
+function resolveCollision(a: Atom, b: Atom, ra: number, rb: number, onHit: () => void): void {
+  const dx = b.pos.x - a.pos.x;
+  const dy = b.pos.y - a.pos.y;
+  const d = Math.sqrt(dx * dx + dy * dy);
+  const minD = ra + rb;
+  if (d < minD && d > 0.001) {
+    const nx = dx / d;
+    const ny = dy / d;
+    const overlap = (minD - d) * 0.5;
+    a.pos.x -= nx * overlap;
+    a.pos.y -= ny * overlap;
+    b.pos.x += nx * overlap;
+    b.pos.y += ny * overlap;
+    const dvx = b.vel.x - a.vel.x;
+    const dvy = b.vel.y - a.vel.y;
+    const dot = dvx * nx + dvy * ny;
+    if (dot < 0) {
+      a.vel.x += dot * nx;
+      a.vel.y += dot * ny;
+      b.vel.x -= dot * nx;
+      b.vel.y -= dot * ny;
+      onHit();
     }
   }
 }
 
-/**
- * Update a bond-stick mesh to stretch between `from` and `to`.
- * The cylinder geometry has height=1, scaled on Y to match the bond length.
- */
-function updateBondMesh(
-  mesh: THREE.Mesh,
-  from: THREE.Vector3,
-  to: THREE.Vector3
-): void {
-  mesh.position.addVectors(from, to).multiplyScalar(0.5);
-  const dir = new THREE.Vector3().subVectors(to, from);
-  const len = dir.length();
+/** Update bond-stick mesh to span between two points. */
+function syncBondMesh(mesh: THREE.Mesh, from: Vec2, to: Vec2): void {
+  const fx = (from.x + to.x) * 0.5;
+  const fy = (from.y + to.y) * 0.5;
+  mesh.position.set(fx, fy, 0);
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
   if (len > 0.001) {
     mesh.quaternion.setFromUnitVectors(
       new THREE.Vector3(0, 1, 0),
-      dir.divideScalar(len)
+      new THREE.Vector3(dx / len, dy / len, 0)
     );
   }
   mesh.scale.set(1, len, 1);
 }
 
-// ─── Main scene component ────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 export function AtomsScene() {
   const { playClink, playBondFormed, playBondBroken } = useAudioVisualSync();
 
-  // Physics bodies — cannon drives position/rotation via a web worker
-  const [oRef, oApi] = useSphere<THREE.Mesh>(() => ({
-    mass: O_MASS,
-    position: [0, 0, 0],
-    args: [O_RADIUS],
-    linearDamping: 0.02,
-    angularDamping: 1,
-  }));
+  // Physics state — all in refs, no React state (runs every frame)
+  const o  = useRef<Atom>({ pos: { x:  0,    y:  0   }, vel: randVel(2.5) });
+  const h1 = useRef<Atom>({ pos: { x: -2.2,  y:  1.5 }, vel: randVel(4)   });
+  const h2 = useRef<Atom>({ pos: { x:  2.2,  y: -1.5 }, vel: randVel(4)   });
+  const bonded = useRef(false);
 
-  const [h1Ref, h1Api] = useSphere<THREE.Mesh>(() => ({
-    mass: H_MASS,
-    position: [-2.2, 1.5, 0],
-    args: [H_RADIUS],
-    linearDamping: 0.02,
-    angularDamping: 1,
-  }));
+  // Mesh refs
+  const oMesh    = useRef<THREE.Mesh>(null);
+  const h1Mesh   = useRef<THREE.Mesh>(null);
+  const h2Mesh   = useRef<THREE.Mesh>(null);
+  const bond1    = useRef<THREE.Mesh>(null);
+  const bond2    = useRef<THREE.Mesh>(null);
 
-  const [h2Ref, h2Api] = useSphere<THREE.Mesh>(() => ({
-    mass: H_MASS,
-    position: [2.2, -1.5, 0],
-    args: [H_RADIUS],
-    linearDamping: 0.02,
-    angularDamping: 1,
-  }));
+  const hitWall   = useCallback(() => playClink(2,   "atom-wall"),  [playClink]);
+  const hitWallH  = useCallback(() => playClink(1.5, "atom-wall"),  [playClink]);
+  const hitAtom   = useCallback(() => playClink(1,   "atom-atom"),  [playClink]);
 
-  // Velocity refs — kept in sync via cannon subscriptions
-  const oVel = useRef<[number, number, number]>([0, 0, 0]);
-  const h1Vel = useRef<[number, number, number]>([0, 0, 0]);
-  const h2Vel = useRef<[number, number, number]>([0, 0, 0]);
+  useFrame((_, dt) => {
+    const clampDt = Math.min(dt, 0.05);
+    const oa = o.current;
+    const h1a = h1.current;
+    const h2a = h2.current;
 
-  // Bonding state (ref, not state — updated & read inside useFrame)
-  const bondedRef = useRef(false);
+    if (!bonded.current) {
+      // ─ Euler integration ──────────────────────────────────────────
+      oa.pos.x  += oa.vel.x  * clampDt;  oa.pos.y  += oa.vel.y  * clampDt;
+      h1a.pos.x += h1a.vel.x * clampDt;  h1a.pos.y += h1a.vel.y * clampDt;
+      h2a.pos.x += h2a.vel.x * clampDt;  h2a.pos.y += h2a.vel.y * clampDt;
 
-  // Bond-stick mesh refs (mutated directly in useFrame, no React re-renders)
-  const bond1Ref = useRef<THREE.Mesh>(null);
-  const bond2Ref = useRef<THREE.Mesh>(null);
+      oa.vel.x  *= DAMPING; oa.vel.y  *= DAMPING;
+      h1a.vel.x *= DAMPING; h1a.vel.y *= DAMPING;
+      h2a.vel.x *= DAMPING; h2a.vel.y *= DAMPING;
 
-  // ─── Subscribe to velocity + set initial kicks ─────────────────────────────
-  useEffect(() => {
-    const u1 = oApi.velocity.subscribe(
-      (v) => { oVel.current = v as [number, number, number]; }
-    );
-    const u2 = h1Api.velocity.subscribe(
-      (v) => { h1Vel.current = v as [number, number, number]; }
-    );
-    const u3 = h2Api.velocity.subscribe(
-      (v) => { h2Vel.current = v as [number, number, number]; }
-    );
+      // ─ Boundary & collision ────────────────────────────────────
+      reflectWall(oa,  O_RADIUS, hitWall);
+      reflectWall(h1a, H_RADIUS, hitWallH);
+      reflectWall(h2a, H_RADIUS, hitWallH);
+      resolveCollision(oa, h1a, O_RADIUS, H_RADIUS, hitAtom);
+      resolveCollision(oa, h2a, O_RADIUS, H_RADIUS, hitAtom);
 
-    const [ox, oy, oz] = randVel(2.5);
-    oApi.velocity.set(ox, oy, oz);
-    const [h1x, h1y, h1z] = randVel(4);
-    h1Api.velocity.set(h1x, h1y, h1z);
-    const [h2x, h2y, h2z] = randVel(4);
-    h2Api.velocity.set(h2x, h2y, h2z);
-
-    return () => { u1(); u2(); u3(); };
-  }, [oApi, h1Api, h2Api]);
-
-  // ─── Bond / Break ───────────────────────────────────────────────────────────
-  const tryBond = useCallback(() => {
-    bondedRef.current = true;
-    playBondFormed();
-    h1Api.velocity.set(0, 0, 0);
-    h2Api.velocity.set(0, 0, 0);
-  }, [h1Api, h2Api, playBondFormed]);
-
-  const doBreak = useCallback(() => {
-    bondedRef.current = false;
-    playBondBroken();
-    if (bond1Ref.current) bond1Ref.current.visible = false;
-    if (bond2Ref.current) bond2Ref.current.visible = false;
-    const [h1x, h1y, h1z] = randVel(5);
-    h1Api.velocity.set(h1x, h1y, h1z);
-    const [h2x, h2y, h2z] = randVel(5);
-    h2Api.velocity.set(h2x, h2y, h2z);
-  }, [h1Api, h2Api, playBondBroken]);
-
-  // ─── Simulation loop (60 fps) ───────────────────────────────────────────────
-  useFrame(() => {
-    if (!oRef.current || !h1Ref.current || !h2Ref.current) return;
-
-    const op = oRef.current.position;
-    const h1p = h1Ref.current.position;
-    const h2p = h2Ref.current.position;
-
-    // Always reflect O off boundary
-    reflectAtom(op, oVel.current, O_RADIUS, oApi, () =>
-      playClink(2, "atom-wall")
-    );
-
-    if (!bondedRef.current) {
-      // Free-roaming: reflect H off boundary
-      reflectAtom(h1p, h1Vel.current, H_RADIUS, h1Api, () =>
-        playClink(1.5, "atom-wall")
-      );
-      reflectAtom(h2p, h2Vel.current, H_RADIUS, h2Api, () =>
-        playClink(1.5, "atom-wall")
-      );
-
-      // Check bonding condition
-      if (
-        op.distanceTo(h1p) < BOND_THRESHOLD &&
-        op.distanceTo(h2p) < BOND_THRESHOLD
-      ) {
-        tryBond();
+      // ─ Bonding check ─────────────────────────────────────────
+      if (dist2(oa.pos, h1a.pos) < BOND_THRESHOLD &&
+          dist2(oa.pos, h2a.pos) < BOND_THRESHOLD) {
+        bonded.current = true;
+        h1a.vel = { x: 0, y: 0 };
+        h2a.vel = { x: 0, y: 0 };
+        playBondFormed();
       }
     } else {
-      // Bonded: drive H positions at 104.5° around O each frame
-      const baseAngle = Math.atan2(op.y, op.x) + Math.PI / 2;
+      // ─ Bonded: move O, lock H to 104.5° geometry ───────────────
+      const speed = Math.sqrt(oa.vel.x ** 2 + oa.vel.y ** 2);
 
-      const h1t = new THREE.Vector3(
-        op.x + BOND_ARM * Math.cos(baseAngle - HALF_ANGLE),
-        op.y + BOND_ARM * Math.sin(baseAngle - HALF_ANGLE),
-        0
-      );
-      const h2t = new THREE.Vector3(
-        op.x + BOND_ARM * Math.cos(baseAngle + HALF_ANGLE),
-        op.y + BOND_ARM * Math.sin(baseAngle + HALF_ANGLE),
-        0
-      );
+      oa.pos.x += oa.vel.x * clampDt;
+      oa.pos.y += oa.vel.y * clampDt;
+      oa.vel.x *= DAMPING;
+      oa.vel.y *= DAMPING;
 
-      h1Api.position.set(h1t.x, h1t.y, 0);
-      h2Api.position.set(h2t.x, h2t.y, 0);
-      h1Api.velocity.set(0, 0, 0);
-      h2Api.velocity.set(0, 0, 0);
+      const hitBoundary = reflectWall(oa, O_RADIUS, hitWall);
 
-      // Sync bond-stick visuals
-      if (bond1Ref.current && bond2Ref.current) {
-        bond1Ref.current.visible = true;
-        bond2Ref.current.visible = true;
-        updateBondMesh(bond1Ref.current, op, h1t);
-        updateBondMesh(bond2Ref.current, op, h2t);
+      if (hitBoundary && speed > BREAK_SPEED) {
+        bonded.current = false;
+        h1a.vel = randVel(5);
+        h2a.vel = randVel(5);
+        playBondBroken();
+      } else {
+        const base = Math.atan2(oa.vel.y || 1, oa.vel.x || 0) + Math.PI / 2;
+        h1a.pos.x = oa.pos.x + BOND_ARM * Math.cos(base - HALF_ANGLE);
+        h1a.pos.y = oa.pos.y + BOND_ARM * Math.sin(base - HALF_ANGLE);
+        h2a.pos.x = oa.pos.x + BOND_ARM * Math.cos(base + HALF_ANGLE);
+        h2a.pos.y = oa.pos.y + BOND_ARM * Math.sin(base + HALF_ANGLE);
       }
+    }
 
-      // Break bond if O hits wall hard
-      const oSpeed = Math.sqrt(
-        oVel.current[0] * oVel.current[0] +
-        oVel.current[1] * oVel.current[1]
-      );
-      if (oSpeed > BREAK_SPEED) doBreak();
+    // ─ Sync meshes ───────────────────────────────────────────────────
+    oMesh.current?.position.set(oa.pos.x,   oa.pos.y,   0);
+    h1Mesh.current?.position.set(h1a.pos.x, h1a.pos.y, 0);
+    h2Mesh.current?.position.set(h2a.pos.x, h2a.pos.y, 0);
+
+    if (bond1.current && bond2.current) {
+      bond1.current.visible = bonded.current;
+      bond2.current.visible = bonded.current;
+      if (bonded.current) {
+        syncBondMesh(bond1.current, oa.pos, h1a.pos);
+        syncBondMesh(bond2.current, oa.pos, h2a.pos);
+      }
     }
   });
 
   return (
     <>
-      {/* Oxygen — large red glowing sphere */}
-      <mesh ref={oRef}>
+      {/* Oxygen — large red sphere */}
+      <mesh ref={oMesh}>
         <sphereGeometry args={[O_RADIUS, 32, 32]} />
-        <meshStandardMaterial
-          color="#ff3333"
-          emissive="#ff0000"
-          emissiveIntensity={1.5}
-          roughness={0.3}
-        />
+        <meshStandardMaterial color="#ff3333" emissive="#ff0000" emissiveIntensity={1.5} roughness={0.3} />
       </mesh>
 
-      {/* Hydrogen 1 — small light-blue sphere */}
-      <mesh ref={h1Ref}>
+      {/* Hydrogen 1 */}
+      <mesh ref={h1Mesh}>
         <sphereGeometry args={[H_RADIUS, 24, 24]} />
-        <meshStandardMaterial
-          color="#aaddff"
-          emissive="#88bbff"
-          emissiveIntensity={0.9}
-          roughness={0.2}
-        />
+        <meshStandardMaterial color="#aaddff" emissive="#88bbff" emissiveIntensity={0.9} roughness={0.2} />
       </mesh>
 
       {/* Hydrogen 2 */}
-      <mesh ref={h2Ref}>
+      <mesh ref={h2Mesh}>
         <sphereGeometry args={[H_RADIUS, 24, 24]} />
-        <meshStandardMaterial
-          color="#aaddff"
-          emissive="#88bbff"
-          emissiveIntensity={0.9}
-          roughness={0.2}
-        />
+        <meshStandardMaterial color="#aaddff" emissive="#88bbff" emissiveIntensity={0.9} roughness={0.2} />
       </mesh>
 
-      {/* Bond sticks — hidden until bonded, mutated directly in useFrame */}
-      <mesh ref={bond1Ref} visible={false}>
+      {/* Bond sticks — shown only when bonded */}
+      <mesh ref={bond1} visible={false}>
         <cylinderGeometry args={[0.06, 0.06, 1, 8]} />
-        <meshStandardMaterial
-          color="#ffffff"
-          emissive="#ccddff"
-          emissiveIntensity={2.5}
-          transparent
-          opacity={0.9}
-        />
+        <meshStandardMaterial color="#ffffff" emissive="#ccddff" emissiveIntensity={2.5} transparent opacity={0.9} />
       </mesh>
-      <mesh ref={bond2Ref} visible={false}>
+      <mesh ref={bond2} visible={false}>
         <cylinderGeometry args={[0.06, 0.06, 1, 8]} />
-        <meshStandardMaterial
-          color="#ffffff"
-          emissive="#ccddff"
-          emissiveIntensity={2.5}
-          transparent
-          opacity={0.9}
-        />
+        <meshStandardMaterial color="#ffffff" emissive="#ccddff" emissiveIntensity={2.5} transparent opacity={0.9} />
       </mesh>
     </>
   );

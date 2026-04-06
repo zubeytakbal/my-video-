@@ -1,5 +1,7 @@
-/** Static neon beaker ring — visual only.
- *  Physics boundary is enforced manually in Atoms.tsx via useFrame.
+/**
+ * Neon beaker ring — visual only.
+ * No rotation: THREE.js Torus lies in the XY plane by default,
+ * which is exactly what we want for a camera at [0,0,14].
  */
 export const BOUNDARY_RADIUS = 4.5;
 
@@ -7,7 +9,7 @@ export function Boundary() {
   return (
     <>
       {/* Primary neon ring */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
+      <mesh>
         <torusGeometry args={[BOUNDARY_RADIUS, 0.15, 16, 128]} />
         <meshStandardMaterial
           color="#00aaff"
@@ -19,8 +21,8 @@ export function Boundary() {
       </mesh>
 
       {/* Outer glow halo */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <torusGeometry args={[BOUNDARY_RADIUS, 0.55, 8, 128]} />
+      <mesh>
+        <torusGeometry args={[BOUNDARY_RADIUS, 0.5, 8, 128]} />
         <meshStandardMaterial
           color="#003366"
           emissive="#0055bb"

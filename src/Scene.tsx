@@ -1,16 +1,14 @@
-import { Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Physics } from "@react-three/cannon";
 import { Boundary } from "./Boundary";
 import { AtomsScene } from "./Atoms";
 
 function Lights() {
   return (
     <>
-      <ambientLight intensity={0.06} />
-      <pointLight position={[0, 4, 6]} intensity={0.9} color="#ffffff" />
-      <pointLight position={[-4, -3, 3]} intensity={0.5} color="#003399" />
-      <pointLight position={[4, 3, 3]} intensity={0.4} color="#990011" />
+      <ambientLight intensity={0.08} />
+      <pointLight position={[0, 4, 6]} intensity={1.2} color="#ffffff" />
+      <pointLight position={[-4, -3, 3]} intensity={0.6} color="#003399" />
+      <pointLight position={[4, 3, 3]} intensity={0.5} color="#990011" />
     </>
   );
 }
@@ -26,15 +24,8 @@ export function Scene() {
       >
         <color attach="background" args={["#000000"]} />
         <Lights />
-        <Suspense fallback={null}>
-          <Physics
-            gravity={[0, 0, 0]}
-            defaultContactMaterial={{ restitution: 0.95, friction: 0 }}
-          >
-            <Boundary />
-            <AtomsScene />
-          </Physics>
-        </Suspense>
+        <Boundary />
+        <AtomsScene />
       </Canvas>
     </div>
   );
