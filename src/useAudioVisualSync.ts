@@ -1,44 +1,34 @@
 import { useCallback, useRef } from "react";
 
-/**
- * Hook for audio-visual sync events.
- * Currently logs to console and calls placeholder functions.
- * Wire up real audio playback here when audio assets are available.
- */
-export type CollisionType = "atom-wall" | "atom-atom" | "bond-formed" | "bond-broken";
-
-export interface CollisionEvent {
-  type: CollisionType;
-  velocity: number;
-  timestamp: number;
-}
+export type CollisionType =
+  | "atom-wall"
+  | "atom-atom"
+  | "bond-formed"
+  | "bond-broken";
 
 export function useAudioVisualSync() {
-  const lastClink = useRef<number>(0);
-  const DEBOUNCE_MS = 80; // prevent rapid-fire sounds
+  const lastClink = useRef(0);
 
-  const playClink = useCallback((velocity: number, type: CollisionType = "atom-wall") => {
-    const now = Date.now();
-    if (now - lastClink.current < DEBOUNCE_MS) return;
-    lastClink.current = now;
-
-    const event: CollisionEvent = { type, velocity, timestamp: now };
-
-    // Placeholder: log event — replace with Remotion audio / Tone.js call
-    console.log("[ASMR Sync] Collision event:", event);
-
-    // TODO: integrate with Remotion's <Audio> or an external synth:
-    // playAudioCue(type, velocity);
-  }, []);
+  /**
+   * playClink — called on every collision.
+   * Replace console.log with real audio (Remotion <Audio />, Tone.js, etc.)
+   */
+  const playClink = useCallback(
+    (velocity: number, type: CollisionType = "atom-wall") => {
+      const now = Date.now();
+      if (now - lastClink.current < 80) return; // debounce
+      lastClink.current = now;
+      console.log(`[ASMR] ${type} — impact ${velocity.toFixed(2)}`);
+    },
+    []
+  );
 
   const playBondFormed = useCallback(() => {
-    console.log("[ASMR Sync] Bond formed — H2O molecule created ✨");
-    // TODO: play a soft chime
+    console.log("[ASMR] \u2728 H\u2082O bond formed");
   }, []);
 
   const playBondBroken = useCallback(() => {
-    console.log("[ASMR Sync] Bond broken — atoms released 💥");
-    // TODO: play a crack/pop sound
+    console.log("[ASMR] \uD83D\uDCA5 Bond broken — atoms released");
   }, []);
 
   return { playClink, playBondFormed, playBondBroken };

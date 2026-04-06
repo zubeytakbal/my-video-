@@ -1,338 +1,281 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { useSphere } from "@react-three/cannon";
+import type { PublicApi } from "@react-three/cannon";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { PublicApi } from "@react-three/cannon";
 import { BOUNDARY_RADIUS } from "./Boundary";
 import { useAudioVisualSync } from "./useAudioVisualSync";
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
+// ─── Constants ──────────────────────────────────────────────────────────────────
 const O_RADIUS = 0.6;
 const H_RADIUS = 0.3;
 const O_MASS = 4;
 const H_MASS = 1;
+const BOND_THRESHOLD = 1.8;         // distance to trigger bonding
+const BOND_ARM = O_RADIUS + H_RADIUS + 0.25; // O–H bond length ~1.15
+const HALF_ANGLE = (104.5 * Math.PI) / 360;  // half of 104.5°
+const BREAK_SPEED = 5.5;            // O speed threshold to break bond
 
-// Bonding threshold: when both H atoms are within this distance from O
-const BOND_THRESHOLD = 1.8;
-// Bond arm length (O–H bond ≈ 0.96 Å, scaled)
-const BOND_LENGTH = O_RADIUS + H_RADIUS + 0.15;
-// H–O–H angle = 104.5°
-const BOND_HALF_ANGLE = (104.5 * Math.PI) / 180 / 2;
-// Velocity magnitude to break bond on hard wall hit
-const BREAK_VELOCITY = 6;
-
-function randomVelocity(scale: number): [number, number, number] {
-  const angle = Math.random() * Math.PI * 2;
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+function randVel(s: number): [number, number, number] {
+  const a = Math.random() * Math.PI * 2;
   return [
-    Math.cos(angle) * scale * (0.6 + Math.random() * 0.8),
-    Math.sin(angle) * scale * (0.6 + Math.random() * 0.8),
+    Math.cos(a) * s * (0.5 + Math.random() * 0.8),
+    Math.sin(a) * s * (0.5 + Math.random() * 0.8),
     0,
   ];
 }
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
-interface AtomState {
-  position: THREE.Vector3;
-  velocity: THREE.Vector3;
+/**
+ * Reflect atom off the circular boundary wall.
+ * Called every frame; only acts when the atom is outside the boundary.
+ */
+function reflectAtom(
+  pos: THREE.Vector3,
+  vel: [number, number, number],
+  radius: number,
+  api: PublicApi,
+  onHit: () => void
+): void {
+  const d = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
+  const limit = BOUNDARY_RADIUS - radius;
+  if (d > limit) {
+    const nx = pos.x / d;
+    const ny = pos.y / d;
+    const dot = vel[0] * nx + vel[1] * ny;
+    if (dot > 0) {
+      api.velocity.set(vel[0] - 2 * dot * nx, vel[1] - 2 * dot * ny, 0);
+      api.position.set(nx * (limit - 0.05), ny * (limit - 0.05), 0);
+      if (Math.abs(dot) > 0.5) onHit();
+    }
+  }
 }
 
-// ─── Oxygen Atom ───────────────────────────────────────────────────────────────
-interface OxygenProps {
-  apiRef: React.MutableRefObject<PublicApi | null>;
-  meshRef: React.RefObject<THREE.Mesh>;
-  onCollide: (v: number) => void;
+/**
+ * Update a bond-stick mesh to stretch between `from` and `to`.
+ * The cylinder geometry has height=1, scaled on Y to match the bond length.
+ */
+function updateBondMesh(
+  mesh: THREE.Mesh,
+  from: THREE.Vector3,
+  to: THREE.Vector3
+): void {
+  mesh.position.addVectors(from, to).multiplyScalar(0.5);
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  if (len > 0.001) {
+    mesh.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      dir.divideScalar(len)
+    );
+  }
+  mesh.scale.set(1, len, 1);
 }
 
-export const OxygenAtom: React.FC<OxygenProps> = ({ apiRef, meshRef, onCollide }) => {
-  const [ref, api] = useSphere(
-    () => ({
-      mass: O_MASS,
-      position: [0, 0, 0],
-      args: [O_RADIUS],
-      linearDamping: 0.05,
-      angularDamping: 1,
-      onCollide: (e) => {
-        const v = e.contact.impactVelocity;
-        if (v > 1) onCollide(v);
-      },
-    }),
-    meshRef
-  );
-
-  useEffect(() => {
-    apiRef.current = api;
-    const [vx, vy, vz] = randomVelocity(2.5);
-    api.velocity.set(vx, vy, vz);
-  }, [api, apiRef]);
-
-  return (
-    <mesh ref={ref as React.RefObject<THREE.Mesh>}>
-      <sphereGeometry args={[O_RADIUS, 32, 32]} />
-      <meshStandardMaterial
-        color="#ff3333"
-        emissive="#ff0000"
-        emissiveIntensity={1.2}
-        roughness={0.3}
-        metalness={0.1}
-      />
-    </mesh>
-  );
-};
-
-// ─── Hydrogen Atom ─────────────────────────────────────────────────────────────
-interface HydrogenProps {
-  index: 0 | 1;
-  apiRef: React.MutableRefObject<PublicApi | null>;
-  meshRef: React.RefObject<THREE.Mesh>;
-  onCollide: (v: number) => void;
-}
-
-export const HydrogenAtom: React.FC<HydrogenProps> = ({ index, apiRef, meshRef, onCollide }) => {
-  const startPos: [number, number, number] =
-    index === 0 ? [-2.5, 1.5, 0] : [2.5, -1.5, 0];
-
-  const [ref, api] = useSphere(
-    () => ({
-      mass: H_MASS,
-      position: startPos,
-      args: [H_RADIUS],
-      linearDamping: 0.02,
-      angularDamping: 1,
-      onCollide: (e) => {
-        const v = e.contact.impactVelocity;
-        if (v > 1) onCollide(v);
-      },
-    }),
-    meshRef
-  );
-
-  useEffect(() => {
-    apiRef.current = api;
-    const [vx, vy, vz] = randomVelocity(4);
-    api.velocity.set(vx, vy, vz);
-  }, [api, apiRef]);
-
-  return (
-    <mesh ref={ref as React.RefObject<THREE.Mesh>}>
-      <sphereGeometry args={[H_RADIUS, 24, 24]} />
-      <meshStandardMaterial
-        color="#aaddff"
-        emissive="#88bbff"
-        emissiveIntensity={0.8}
-        roughness={0.2}
-        metalness={0.05}
-      />
-    </mesh>
-  );
-};
-
-// ─── Bond Visual (stick between atoms) ────────────────────────────────────────
-interface BondProps {
-  from: THREE.Vector3;
-  to: THREE.Vector3;
-}
-
-const BondStick: React.FC<BondProps> = ({ from, to }) => {
-  const dir = to.clone().sub(from);
-  const length = dir.length();
-  const mid = from.clone().add(to).multiplyScalar(0.5);
-  const quaternion = new THREE.Quaternion();
-  quaternion.setFromUnitVectors(
-    new THREE.Vector3(0, 1, 0),
-    dir.clone().normalize()
-  );
-
-  return (
-    <mesh position={mid} quaternion={quaternion}>
-      <cylinderGeometry args={[0.06, 0.06, length, 8]} />
-      <meshStandardMaterial
-        color="#ffffff"
-        emissive="#ccddff"
-        emissiveIntensity={1.5}
-        transparent
-        opacity={0.9}
-      />
-    </mesh>
-  );
-};
-
-// ─── Main Atoms Scene ──────────────────────────────────────────────────────────
-export const AtomsScene: React.FC = () => {
+// ─── Main scene component ────────────────────────────────────────────────────────
+export function AtomsScene() {
   const { playClink, playBondFormed, playBondBroken } = useAudioVisualSync();
 
-  // Physics API refs
-  const oApi = useRef<PublicApi | null>(null);
-  const h1Api = useRef<PublicApi | null>(null);
-  const h2Api = useRef<PublicApi | null>(null);
+  // Physics bodies — cannon drives position/rotation via a web worker
+  const [oRef, oApi] = useSphere<THREE.Mesh>(() => ({
+    mass: O_MASS,
+    position: [0, 0, 0],
+    args: [O_RADIUS],
+    linearDamping: 0.02,
+    angularDamping: 1,
+  }));
 
-  // THREE.js mesh refs (for reading positions each frame)
-  const oMesh = useRef<THREE.Mesh>(null);
-  const h1Mesh = useRef<THREE.Mesh>(null);
-  const h2Mesh = useRef<THREE.Mesh>(null);
+  const [h1Ref, h1Api] = useSphere<THREE.Mesh>(() => ({
+    mass: H_MASS,
+    position: [-2.2, 1.5, 0],
+    args: [H_RADIUS],
+    linearDamping: 0.02,
+    angularDamping: 1,
+  }));
 
-  // State
-  const [bonded, setBonded] = useState(false);
-  const bondedRef = useRef(false); // sync ref for use inside useFrame
+  const [h2Ref, h2Api] = useSphere<THREE.Mesh>(() => ({
+    mass: H_MASS,
+    position: [2.2, -1.5, 0],
+    args: [H_RADIUS],
+    linearDamping: 0.02,
+    angularDamping: 1,
+  }));
 
-  // Track live positions (updated each frame via physics subscription)
-  const oPos = useRef(new THREE.Vector3());
-  const h1Pos = useRef(new THREE.Vector3());
-  const h2Pos = useRef(new THREE.Vector3());
-  const oVel = useRef(new THREE.Vector3());
+  // Velocity refs — kept in sync via cannon subscriptions
+  const oVel = useRef<[number, number, number]>([0, 0, 0]);
+  const h1Vel = useRef<[number, number, number]>([0, 0, 0]);
+  const h2Vel = useRef<[number, number, number]>([0, 0, 0]);
 
-  // Bond visual state (re-render only when bonded)
-  const [bondPositions, setBondPositions] = useState<{
-    o: THREE.Vector3;
-    h1: THREE.Vector3;
-    h2: THREE.Vector3;
-  } | null>(null);
+  // Bonding state (ref, not state — updated & read inside useFrame)
+  const bondedRef = useRef(false);
 
-  // Collision callbacks
-  const handleOCollide = useCallback(
-    (v: number) => playClink(v, "atom-wall"),
-    [playClink]
-  );
-  const handleHCollide = useCallback(
-    (v: number) => playClink(v, "atom-wall"),
-    [playClink]
-  );
+  // Bond-stick mesh refs (mutated directly in useFrame, no React re-renders)
+  const bond1Ref = useRef<THREE.Mesh>(null);
+  const bond2Ref = useRef<THREE.Mesh>(null);
 
-  // ── useFrame: bonding logic ──────────────────────────────────────────────────
+  // ─── Subscribe to velocity + set initial kicks ─────────────────────────────
+  useEffect(() => {
+    const u1 = oApi.velocity.subscribe(
+      (v) => { oVel.current = v as [number, number, number]; }
+    );
+    const u2 = h1Api.velocity.subscribe(
+      (v) => { h1Vel.current = v as [number, number, number]; }
+    );
+    const u3 = h2Api.velocity.subscribe(
+      (v) => { h2Vel.current = v as [number, number, number]; }
+    );
+
+    const [ox, oy, oz] = randVel(2.5);
+    oApi.velocity.set(ox, oy, oz);
+    const [h1x, h1y, h1z] = randVel(4);
+    h1Api.velocity.set(h1x, h1y, h1z);
+    const [h2x, h2y, h2z] = randVel(4);
+    h2Api.velocity.set(h2x, h2y, h2z);
+
+    return () => { u1(); u2(); u3(); };
+  }, [oApi, h1Api, h2Api]);
+
+  // ─── Bond / Break ───────────────────────────────────────────────────────────
+  const tryBond = useCallback(() => {
+    bondedRef.current = true;
+    playBondFormed();
+    h1Api.velocity.set(0, 0, 0);
+    h2Api.velocity.set(0, 0, 0);
+  }, [h1Api, h2Api, playBondFormed]);
+
+  const doBreak = useCallback(() => {
+    bondedRef.current = false;
+    playBondBroken();
+    if (bond1Ref.current) bond1Ref.current.visible = false;
+    if (bond2Ref.current) bond2Ref.current.visible = false;
+    const [h1x, h1y, h1z] = randVel(5);
+    h1Api.velocity.set(h1x, h1y, h1z);
+    const [h2x, h2y, h2z] = randVel(5);
+    h2Api.velocity.set(h2x, h2y, h2z);
+  }, [h1Api, h2Api, playBondBroken]);
+
+  // ─── Simulation loop (60 fps) ───────────────────────────────────────────────
   useFrame(() => {
-    if (!oMesh.current || !h1Mesh.current || !h2Mesh.current) return;
+    if (!oRef.current || !h1Ref.current || !h2Ref.current) return;
 
-    // Read live world positions from meshes
-    oMesh.current.getWorldPosition(oPos.current);
-    h1Mesh.current.getWorldPosition(h1Pos.current);
-    h2Mesh.current.getWorldPosition(h2Pos.current);
+    const op = oRef.current.position;
+    const h1p = h1Ref.current.position;
+    const h2p = h2Ref.current.position;
 
-    const d1 = oPos.current.distanceTo(h1Pos.current);
-    const d2 = oPos.current.distanceTo(h2Pos.current);
+    // Always reflect O off boundary
+    reflectAtom(op, oVel.current, O_RADIUS, oApi, () =>
+      playClink(2, "atom-wall")
+    );
 
     if (!bondedRef.current) {
-      // Check if both H are close enough to bond
-      if (d1 < BOND_THRESHOLD && d2 < BOND_THRESHOLD) {
-        bondedRef.current = true;
-        setBonded(true);
-        playBondFormed();
+      // Free-roaming: reflect H off boundary
+      reflectAtom(h1p, h1Vel.current, H_RADIUS, h1Api, () =>
+        playClink(1.5, "atom-wall")
+      );
+      reflectAtom(h2p, h2Vel.current, H_RADIUS, h2Api, () =>
+        playClink(1.5, "atom-wall")
+      );
 
-        // Freeze H atoms — we'll drive them manually
-        h1Api.current?.mass.set(0);
-        h2Api.current?.mass.set(0);
-        h1Api.current?.velocity.set(0, 0, 0);
-        h2Api.current?.velocity.set(0, 0, 0);
+      // Check bonding condition
+      if (
+        op.distanceTo(h1p) < BOND_THRESHOLD &&
+        op.distanceTo(h2p) < BOND_THRESHOLD
+      ) {
+        tryBond();
       }
     } else {
-      // Drive H positions to maintain 104.5° geometry around O
-      const angle1 = Math.atan2(oPos.current.y, oPos.current.x) + Math.PI / 2;
+      // Bonded: drive H positions at 104.5° around O each frame
+      const baseAngle = Math.atan2(op.y, op.x) + Math.PI / 2;
 
-      const h1Target = new THREE.Vector3(
-        oPos.current.x + BOND_LENGTH * Math.cos(angle1 - BOND_HALF_ANGLE),
-        oPos.current.y + BOND_LENGTH * Math.sin(angle1 - BOND_HALF_ANGLE),
+      const h1t = new THREE.Vector3(
+        op.x + BOND_ARM * Math.cos(baseAngle - HALF_ANGLE),
+        op.y + BOND_ARM * Math.sin(baseAngle - HALF_ANGLE),
         0
       );
-      const h2Target = new THREE.Vector3(
-        oPos.current.x + BOND_LENGTH * Math.cos(angle1 + BOND_HALF_ANGLE),
-        oPos.current.y + BOND_LENGTH * Math.sin(angle1 + BOND_HALF_ANGLE),
+      const h2t = new THREE.Vector3(
+        op.x + BOND_ARM * Math.cos(baseAngle + HALF_ANGLE),
+        op.y + BOND_ARM * Math.sin(baseAngle + HALF_ANGLE),
         0
       );
 
-      h1Api.current?.position.set(h1Target.x, h1Target.y, 0);
-      h2Api.current?.position.set(h2Target.x, h2Target.y, 0);
+      h1Api.position.set(h1t.x, h1t.y, 0);
+      h2Api.position.set(h2t.x, h2t.y, 0);
+      h1Api.velocity.set(0, 0, 0);
+      h2Api.velocity.set(0, 0, 0);
 
-      // Update bond visual
-      setBondPositions({
-        o: oPos.current.clone(),
-        h1: h1Target,
-        h2: h2Target,
-      });
-
-      // Check for high-velocity wall impact → break bond
-      oApi.current?.velocity.subscribe((v) => {
-        oVel.current.set(v[0], v[1], v[2]);
-      });
-
-      if (oVel.current.length() > BREAK_VELOCITY) {
-        breakBond();
+      // Sync bond-stick visuals
+      if (bond1Ref.current && bond2Ref.current) {
+        bond1Ref.current.visible = true;
+        bond2Ref.current.visible = true;
+        updateBondMesh(bond1Ref.current, op, h1t);
+        updateBondMesh(bond2Ref.current, op, h2t);
       }
 
-      // Also break if O drifts too close to the boundary
-      if (oPos.current.length() > BOUNDARY_RADIUS - O_RADIUS - 0.3) {
-        breakBond();
-      }
+      // Break bond if O hits wall hard
+      const oSpeed = Math.sqrt(
+        oVel.current[0] * oVel.current[0] +
+        oVel.current[1] * oVel.current[1]
+      );
+      if (oSpeed > BREAK_SPEED) doBreak();
     }
   });
 
-  const breakBond = useCallback(() => {
-    if (!bondedRef.current) return;
-    bondedRef.current = false;
-    setBonded(false);
-    setBondPositions(null);
-    playBondBroken();
-
-    // Restore H mass and give random kick
-    h1Api.current?.mass.set(H_MASS);
-    h2Api.current?.mass.set(H_MASS);
-    const [vx1, vy1] = randomVelocity(5);
-    const [vx2, vy2] = randomVelocity(5);
-    h1Api.current?.velocity.set(vx1, vy1, 0);
-    h2Api.current?.velocity.set(vx2, vy2, 0);
-    oApi.current?.velocity.set(-vx1 * 0.5, -vy1 * 0.5, 0);
-  }, [playBondBroken]);
-
   return (
     <>
-      <OxygenAtom apiRef={oApi} meshRef={oMesh} onCollide={handleOCollide} />
-      <HydrogenAtom
-        index={0}
-        apiRef={h1Api}
-        meshRef={h1Mesh}
-        onCollide={handleHCollide}
-      />
-      <HydrogenAtom
-        index={1}
-        apiRef={h2Api}
-        meshRef={h2Mesh}
-        onCollide={handleHCollide}
-      />
+      {/* Oxygen — large red glowing sphere */}
+      <mesh ref={oRef}>
+        <sphereGeometry args={[O_RADIUS, 32, 32]} />
+        <meshStandardMaterial
+          color="#ff3333"
+          emissive="#ff0000"
+          emissiveIntensity={1.5}
+          roughness={0.3}
+        />
+      </mesh>
 
-      {/* Bond sticks — only visible when bonded */}
-      {bonded && bondPositions && (
-        <>
-          <BondStick from={bondPositions.o} to={bondPositions.h1} />
-          <BondStick from={bondPositions.o} to={bondPositions.h2} />
-        </>
-      )}
+      {/* Hydrogen 1 — small light-blue sphere */}
+      <mesh ref={h1Ref}>
+        <sphereGeometry args={[H_RADIUS, 24, 24]} />
+        <meshStandardMaterial
+          color="#aaddff"
+          emissive="#88bbff"
+          emissiveIntensity={0.9}
+          roughness={0.2}
+        />
+      </mesh>
 
-      {/* Atom labels */}
-      <AtomLabel position={oMesh} text="O" color="#ff4444" />
-      <AtomLabel position={h1Mesh} text="H" color="#aaddff" />
-      <AtomLabel position={h2Mesh} text="H" color="#aaddff" />
+      {/* Hydrogen 2 */}
+      <mesh ref={h2Ref}>
+        <sphereGeometry args={[H_RADIUS, 24, 24]} />
+        <meshStandardMaterial
+          color="#aaddff"
+          emissive="#88bbff"
+          emissiveIntensity={0.9}
+          roughness={0.2}
+        />
+      </mesh>
+
+      {/* Bond sticks — hidden until bonded, mutated directly in useFrame */}
+      <mesh ref={bond1Ref} visible={false}>
+        <cylinderGeometry args={[0.06, 0.06, 1, 8]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#ccddff"
+          emissiveIntensity={2.5}
+          transparent
+          opacity={0.9}
+        />
+      </mesh>
+      <mesh ref={bond2Ref} visible={false}>
+        <cylinderGeometry args={[0.06, 0.06, 1, 8]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#ccddff"
+          emissiveIntensity={2.5}
+          transparent
+          opacity={0.9}
+        />
+      </mesh>
     </>
   );
-};
-
-// ─── Simple floating label ─────────────────────────────────────────────────────
-interface LabelProps {
-  position: React.RefObject<THREE.Mesh>;
-  text: string;
-  color: string;
 }
-
-const AtomLabel: React.FC<LabelProps> = ({ position, text, color }) => {
-  const labelRef = useRef<THREE.Mesh>(null);
-
-  useFrame(() => {
-    if (!position.current || !labelRef.current) return;
-    const p = new THREE.Vector3();
-    position.current.getWorldPosition(p);
-    labelRef.current.position.set(p.x, p.y + (text === "O" ? 0.9 : 0.6), p.z);
-  });
-
-  return (
-    <mesh ref={labelRef}>
-      <sphereGeometry args={[0.001, 4, 4]} />
-      <meshBasicMaterial transparent opacity={0} />
-    </mesh>
-  );
-};

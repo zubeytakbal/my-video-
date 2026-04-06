@@ -1,22 +1,19 @@
-import React from "react";
+import "./index.css";
 import { Composition } from "remotion";
 import { H2OSynthesis } from "./Composition";
 
 /**
- * Root — registers all Remotion compositions.
+ * RemotionRoot — registers all compositions.
  *
- * Video specs:
- *   Format : 9:16  (1080 × 1920)  — YouTube Shorts / Instagram Reels
- *   FPS    : 30
- *   Length : 30 s  (900 frames)
+ * H2OSynthesis: 1080 x 1920 (9:16) @ 30 fps, 30 s
  */
-export const Root: React.FC = () => {
+export const RemotionRoot = () => {
   return (
     <>
       <Composition
         id="H2OSynthesis"
         component={H2OSynthesis}
-        durationInFrames={900}   // 30 s @ 30 fps
+        durationInFrames={900}
         fps={30}
         width={1080}
         height={1920}

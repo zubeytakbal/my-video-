@@ -1,116 +1,102 @@
-import React from "react";
-import { AbsoluteFill, useVideoConfig } from "remotion";
+import { AbsoluteFill } from "remotion";
 import { Scene } from "./Scene";
 
 /**
- * H2O Synthesis Composition
- *
- * 9:16 aspect ratio (1080×1920) — optimised for YouTube Shorts, Instagram Reels
- * Duration: 30 seconds @ 30 fps
+ * H2OSynthesis — 9:16 ASMR physics composition.
+ * 1080 x 1920 @ 30 fps, 30 s (900 frames).
  */
-export const H2OSynthesis: React.FC = () => {
-  const { width, height } = useVideoConfig();
-
+export function H2OSynthesis() {
   return (
-    <AbsoluteFill
-      style={{
-        background: "#000000",
-        width,
-        height,
-        overflow: "hidden",
-      }}
-    >
+    <AbsoluteFill style={{ background: "#000000" }}>
+      {/* 3-D physics scene fills the full frame */}
+      <Scene />
+
       {/* Title overlay */}
       <div
         style={{
           position: "absolute",
-          top: 48,
+          top: 0,
           left: 0,
           right: 0,
-          textAlign: "center",
-          zIndex: 10,
+          paddingTop: 72,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 6,
           pointerEvents: "none",
-          fontFamily: "'Courier New', monospace",
+          fontFamily: "'Courier New', Courier, monospace",
         }}
       >
-        <div
+        <span
           style={{
-            fontSize: 28,
-            fontWeight: 700,
             color: "#00ccff",
-            textShadow: "0 0 20px #00aaff, 0 0 40px #0066ff",
-            letterSpacing: 3,
+            fontSize: 24,
+            letterSpacing: 5,
             textTransform: "uppercase",
+            textShadow: "0 0 18px #00aaff, 0 0 40px #0055cc",
           }}
         >
           The Chemistry of Chaos
-        </div>
-        <div
+        </span>
+        <span
           style={{
-            fontSize: 48,
-            fontWeight: 900,
             color: "#ffffff",
-            textShadow: "0 0 30px #ffffff, 0 0 60px #aaddff",
-            letterSpacing: 6,
-            marginTop: 4,
+            fontSize: 88,
+            fontWeight: 900,
+            letterSpacing: 10,
+            lineHeight: 1,
+            textShadow: "0 0 40px #ffffff, 0 0 80px #aaddff, 0 0 120px #6699ff",
           }}
         >
-          H₂O
-        </div>
-        <div
+          H&#8322;O
+        </span>
+        <span
           style={{
-            fontSize: 16,
-            color: "#888888",
-            letterSpacing: 4,
-            marginTop: 8,
+            color: "#555555",
+            fontSize: 13,
+            letterSpacing: 7,
             textTransform: "uppercase",
           }}
         >
           Synthesis
-        </div>
+        </span>
       </div>
 
-      {/* 3-D Physics Scene */}
-      <Scene />
-
-      {/* Bottom legend */}
+      {/* Atom legend */}
       <div
         style={{
           position: "absolute",
-          bottom: 64,
+          bottom: 88,
           left: 0,
           right: 0,
           display: "flex",
           justifyContent: "center",
-          gap: 40,
+          gap: 48,
           pointerEvents: "none",
-          fontFamily: "'Courier New', monospace",
+          fontFamily: "'Courier New', Courier, monospace",
         }}
       >
-        <LegendItem color="#ff4444" glow="#ff0000" label="O  Oxygen" />
-        <LegendItem color="#aaddff" glow="#88bbff" label="H  Hydrogen" />
-        <LegendItem color="#00aaff" glow="#0066ff" label="⬤  Beaker" />
+        <span
+          style={{
+            color: "#ff4444",
+            fontSize: 13,
+            letterSpacing: 3,
+            textShadow: "0 0 14px #ff0000",
+          }}
+        >
+          &#9679; O &nbsp; Oxygen
+        </span>
+        <span
+          style={{
+            color: "#aaddff",
+            fontSize: 13,
+            letterSpacing: 3,
+            textShadow: "0 0 14px #88bbff",
+          }}
+        >
+          &#9679; H &nbsp; Hydrogen
+        </span>
       </div>
     </AbsoluteFill>
   );
-};
-
-interface LegendItemProps {
-  color: string;
-  glow: string;
-  label: string;
 }
-
-const LegendItem: React.FC<LegendItemProps> = ({ color, glow, label }) => (
-  <div
-    style={{
-      color,
-      textShadow: `0 0 12px ${glow}`,
-      fontSize: 14,
-      letterSpacing: 2,
-      fontWeight: 600,
-    }}
-  >
-    {label}
-  </div>
-);
